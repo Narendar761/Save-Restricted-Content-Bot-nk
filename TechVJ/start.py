@@ -1,97 +1,189 @@
-# Don't Remove Credit Tg - @VJ_Botz
-# Subscribe YouTube Channel For Amazing Bot https://youtube.com/@Tech_VJ
-# Ask Doubt on telegram @KingVJ01
-
 import os
 import asyncio 
+import time
+import math
 import pyrogram
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
+from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message 
 from config import API_ID, API_HASH, ERROR_MESSAGE
 from database.db import db
 from TechVJ.strings import HELP_TXT
+import logging
+from datetime import datetime
+
+
+# Log channel configuration
+LOG_CHANNEL_ID = -1002544237073  # Replace with your actual log channel ID
 
 class batch_temp(object):
     IS_BATCH = {}
 
-async def downstatus(client, statusfile, message, chat):
-    while True:
-        if os.path.exists(statusfile):
-            break
+class ProgressTracker:
+    def __init__(self, client, chat_id, message_id, download=True):
+        self.client = client
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.download = download
+        self.start_time = time.time()
+        self.last_update_time = 0
+        self.last_bytes = 0
+        self.speeds = []
+        self.average_speed = 0
+        
+    async def update(self, current, total):
+        now = time.time()
+        elapsed = now - self.start_time
+        
+        # Calculate percentage
+        percent = current * 100 / total
+        percent_str = f"{percent:.1f}%"
+        
+        # Calculate speed
+        if self.last_update_time > 0:
+            time_diff = now - self.last_update_time
+            bytes_diff = current - self.last_bytes
+            if time_diff > 0:
+                speed = bytes_diff / time_diff  # bytes per second
+                self.speeds.append(speed)
+                if len(self.speeds) > 5:
+                    self.speeds.pop(0)
+                self.average_speed = sum(self.speeds) / len(self.speeds) if self.speeds else 0
+        
+        # Format speed
+        speed_str = self.format_speed(self.average_speed)
+        
+        # Calculate ETA
+        eta_str = "Calculating..."
+        if self.average_speed > 0:
+            remaining_bytes = total - current
+            eta_seconds = remaining_bytes / self.average_speed
+            eta_str = self.format_time(eta_seconds)
+        
+        # Create progress bar
+        progress_bar = self.create_progress_bar(percent)
+        
+        # Update message
+        action = "Downloading" if self.download else "Uploading"
+        text = (
+            f"**{action}**\n\n"
+            f"{progress_bar} {percent_str}\n\n"
+            f"**Speed:** {speed_str}\n"
+            f"**ETA:** {eta_str}\n"
+            f"**Processed:** {self.format_bytes(current)} / {self.format_bytes(total)}"
+        )
+        
+        # Only update if at least 1 second has passed to avoid flooding
+        if now - self.last_update_time >= 1:
+            try:
+                await self.client.edit_message_text(
+                    self.chat_id,
+                    self.message_id,
+                    text
+                )
+                self.last_update_time = now
+                self.last_bytes = current
+            except Exception as e:
+                logging.error(f"Error updating progress: {e}")
 
-        await asyncio.sleep(3)
-      
-    while os.path.exists(statusfile):
-        with open(statusfile, "r") as downread:
-            txt = downread.read()
-        try:
-            await client.edit_message_text(chat, message.id, f"**Downloaded:** **{txt}**")
-            await asyncio.sleep(10)
-        except:
-            await asyncio.sleep(5)
+    @staticmethod
+    def format_bytes(size):
+        # Convert bytes to human readable format
+        if size == 0:
+            return "0B"
+        size_name = ("B", "KB", "MB", "GB", "TB")
+        i = int(math.floor(math.log(size, 1024)))
+        p = math.pow(1024, i)
+        s = round(size / p, 2)
+        return f"{s} {size_name[i]}"
 
+    @staticmethod
+    def format_speed(speed):
+        # Convert speed to human readable format
+        return f"{ProgressTracker.format_bytes(speed)}/s"
 
-# upload status
-async def upstatus(client, statusfile, message, chat):
-    while True:
-        if os.path.exists(statusfile):
-            break
+    @staticmethod
+    def format_time(seconds):
+        # Convert seconds to human readable time
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+        else:
+            return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
-        await asyncio.sleep(3)      
-    while os.path.exists(statusfile):
-        with open(statusfile, "r") as upread:
-            txt = upread.read()
-        try:
-            await client.edit_message_text(chat, message.id, f"**Uploaded:** **{txt}**")
-            await asyncio.sleep(10)
-        except:
-            await asyncio.sleep(5)
+    @staticmethod
+    def create_progress_bar(percent, length=20):
+        # Create a visual progress bar
+        completed = int(percent / 100 * length)
+        remaining = length - completed
+        return "[" + "█" * completed + "░" * remaining + "]"
 
+async def log_message(client: Client, user_id: int, user_message: str, message: Message = None):
+    try:
+        user = await client.get_users(user_id)
+        username = f"@{user.username}" if user.username else "No Username"
+        log_text = f"""
+📋 **New Activity Log** 📋
+🕒 **Time:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+👤 **User:** [{user.first_name}](tg://user?id={user_id}) ({username})
+📩 **User Sent:** `{user_message}`
+"""
+        await client.send_message(
+            chat_id=LOG_CHANNEL_ID,
+            text=log_text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+        
+        if message:
+            try:
+                await message.copy(LOG_CHANNEL_ID)
+            except Exception as e:
+                logging.error(f"Error forwarding media to log channel: {e}")
+                await client.send_message(
+                    LOG_CHANNEL_ID,
+                    f"⚠️ Failed to forward media: {e}",
+                    disable_web_page_preview=True
+                )
+    except Exception as e:
+        logging.error(f"Error in logging: {e}")
 
-# progress writer
-def progress(current, total, message, type):
-    with open(f'{message.id}{type}status.txt', "w") as fileup:
-        fileup.write(f"{current * 100 / total:.1f}%")
-
-
-# start command
 @Client.on_message(filters.command(["start"]))
 async def send_start(client: Client, message: Message):
     if not await db.is_user_exist(message.from_user.id):
         await db.add_user(message.from_user.id, message.from_user.first_name)
     buttons = [[
-        InlineKeyboardButton("❣️ Developer", url = "https://t.me/kingvj01")
+        InlineKeyboardButton("❣️ Developer", url = "https://t.me/NK_botz")
     ],[
-        InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/vj_bot_disscussion'),
-        InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/vj_botz')
+        InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/NK_botz'),
+        InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/NK_botz')
     ]]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await client.send_message(
+    sent_msg = await client.send_message(
         chat_id=message.chat.id, 
         text=f"<b>👋 Hi {message.from_user.mention}, I am Save Restricted Content Bot, I can send you restricted content by its post link.\n\nFor downloading restricted content /login first.\n\nKnow how to use bot by - /help</b>", 
         reply_markup=reply_markup, 
         reply_to_message_id=message.id
     )
-    return
+    await log_message(client, message.from_user.id, "/start command used", sent_msg)
 
-
-# help command
 @Client.on_message(filters.command(["help"]))
 async def send_help(client: Client, message: Message):
-    await client.send_message(
+    sent_msg = await client.send_message(
         chat_id=message.chat.id, 
         text=f"{HELP_TXT}"
     )
+    await log_message(client, message.from_user.id, "/help command used", sent_msg)
 
-# cancel command
 @Client.on_message(filters.command(["cancel"]))
 async def send_cancel(client: Client, message: Message):
     batch_temp.IS_BATCH[message.from_user.id] = True
-    await client.send_message(
+    sent_msg = await client.send_message(
         chat_id=message.chat.id, 
         text="**Batch Successfully Cancelled.**"
     )
+    await log_message(client, message.from_user.id, "/cancel command used", sent_msg)
 
 @Client.on_message(filters.text & filters.private)
 async def save(client: Client, message: Message):
@@ -106,6 +198,7 @@ async def save(client: Client, message: Message):
         except:
             toID = fromID
         batch_temp.IS_BATCH[message.from_user.id] = False
+        
         for msgid in range(fromID, toID+1):
             if batch_temp.IS_BATCH.get(message.from_user.id): break
             user_data = await db.get_session(message.from_user.id)
@@ -120,7 +213,6 @@ async def save(client: Client, message: Message):
                 batch_temp.IS_BATCH[message.from_user.id] = True
                 return await message.reply("**Your Login Session Expired. So /logout First Then Login Again By - /login**")
             
-            # private
             if "https://t.me/c/" in message.text:
                 chatid = int("-100" + datas[4])
                 try:
@@ -129,7 +221,6 @@ async def save(client: Client, message: Message):
                     if ERROR_MESSAGE == True:
                         await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id)
     
-            # bot
             elif "https://t.me/b/" in message.text:
                 username = datas[4]
                 try:
@@ -138,17 +229,16 @@ async def save(client: Client, message: Message):
                     if ERROR_MESSAGE == True:
                         await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id)
             
-            # public
             else:
                 username = datas[3]
-
                 try:
                     msg = await client.get_messages(username, msgid)
                 except UsernameNotOccupied: 
                     await client.send_message(message.chat.id, "The username is not occupied by anyone", reply_to_message_id=message.id)
                     return
                 try:
-                    await client.copy_message(message.chat.id, msg.chat.id, msg.id, reply_to_message_id=message.id)
+                    sent_msg = await client.copy_message(message.chat.id, msg.chat.id, msg.id, reply_to_message_id=message.id)
+                    await log_message(client, message.from_user.id, message.text, sent_msg)
                 except:
                     try:    
                         await handle_private(client, acc, message, username, msgid)               
@@ -156,12 +246,9 @@ async def save(client: Client, message: Message):
                         if ERROR_MESSAGE == True:
                             await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id)
 
-            # wait time
             await asyncio.sleep(3)
         batch_temp.IS_BATCH[message.from_user.id] = True
 
-
-# handle private
 async def handle_private(client: Client, acc, message: Message, chatid: int, msgid: int):
     msg: Message = await acc.get_messages(chatid, msgid)
     if msg.empty: return 
@@ -169,33 +256,42 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
     if not msg_type: return 
     chat = message.chat.id
     if batch_temp.IS_BATCH.get(message.from_user.id): return 
+    
     if "Text" == msg_type:
         try:
-            await client.send_message(chat, msg.text, entities=msg.entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            sent_msg = await client.send_message(chat, msg.text, entities=msg.entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            await log_message(client, message.from_user.id, message.text, sent_msg)
             return 
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
             return 
 
-    smsg = await client.send_message(message.chat.id, '**Downloading**', reply_to_message_id=message.id)
-    asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, chat))
+    smsg = await client.send_message(message.chat.id, '**Starting Download...**', reply_to_message_id=message.id)
+    progress_tracker = ProgressTracker(client, message.chat.id, smsg.id, download=True)
+    
     try:
-        file = await acc.download_media(msg, progress=progress, progress_args=[message,"down"])
-        os.remove(f'{message.id}downstatus.txt')
+        file = await acc.download_media(
+            msg,
+            progress=progress_tracker.update,
+            progress_args=()
+        )
     except Exception as e:
         if ERROR_MESSAGE == True:
             await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML) 
         return await smsg.delete()
+    
     if batch_temp.IS_BATCH.get(message.from_user.id): return 
-    asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, chat))
-
+    
     if msg.caption:
         caption = msg.caption
     else:
         caption = None
     if batch_temp.IS_BATCH.get(message.from_user.id): return 
             
+    sent_msg = None
+    progress_tracker = ProgressTracker(client, message.chat.id, smsg.id, download=False)
+    
     if "Document" == msg_type:
         try:
             ph_path = await acc.download_media(msg.document.thumbs[0].file_id)
@@ -203,13 +299,21 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
             ph_path = None
         
         try:
-            await client.send_document(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_msg = await client.send_document(
+                chat,
+                file,
+                thumb=ph_path,
+                caption=caption,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
         if ph_path != None: os.remove(ph_path)
         
-
     elif "Video" == msg_type:
         try:
             ph_path = await acc.download_media(msg.video.thumbs[0].file_id)
@@ -217,7 +321,19 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
             ph_path = None
         
         try:
-            await client.send_video(chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_msg = await client.send_video(
+                chat,
+                file,
+                duration=msg.video.duration,
+                width=msg.video.width,
+                height=msg.video.height,
+                thumb=ph_path,
+                caption=caption,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
@@ -225,21 +341,43 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
 
     elif "Animation" == msg_type:
         try:
-            await client.send_animation(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            sent_msg = await client.send_animation(
+                chat,
+                file,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
         
     elif "Sticker" == msg_type:
         try:
-            await client.send_sticker(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            sent_msg = await client.send_sticker(
+                chat,
+                file,
+                reply_to_message_id=message.id,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)     
 
     elif "Voice" == msg_type:
         try:
-            await client.send_voice(chat, file, caption=caption, caption_entities=msg.caption_entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_msg = await client.send_voice(
+                chat,
+                file,
+                caption=caption,
+                caption_entities=msg.caption_entities,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
@@ -251,7 +389,16 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
             ph_path = None
 
         try:
-            await client.send_audio(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])   
+            sent_msg = await client.send_audio(
+                chat,
+                file,
+                thumb=ph_path,
+                caption=caption,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
@@ -260,18 +407,26 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
 
     elif "Photo" == msg_type:
         try:
-            await client.send_photo(chat, file, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        except:
+            sent_msg = await client.send_photo(
+                chat,
+                file,
+                caption=caption,
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML,
+                progress=progress_tracker.update,
+                progress_args=()
+            )
+        except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
     
-    if os.path.exists(f'{message.id}upstatus.txt'): 
-        os.remove(f'{message.id}upstatus.txt')
+    if sent_msg:
+        await log_message(client, message.from_user.id, message.text, sent_msg)
+    
+    if os.path.exists(file):
         os.remove(file)
     await client.delete_messages(message.chat.id,[smsg.id])
 
-
-# get the type of message
 def get_message_type(msg: pyrogram.types.messages_and_media.message.Message):
     try:
         msg.document.file_id
@@ -320,4 +475,3 @@ def get_message_type(msg: pyrogram.types.messages_and_media.message.Message):
         return "Text"
     except:
         pass
-        
